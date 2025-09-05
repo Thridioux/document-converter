@@ -1,0 +1,40 @@
+
+# Maven
+target/
+.mvn/
+mvnw*
+
+# IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+.classpath
+.project
+.settings/
+.factorypath
+.apt_generated
+.springBeans
+.sts4-cache
+.vscode/
+
+# NetBeans
+nbproject/
+nbbuild/
+dist/
+nbdist/
+.nb-gradle/
+build/
+
+# OS/Editor
+.DS_Store
+Thumbs.db
+
+# Output and debug
+outputs/
+
+# Logs
+*.log
+
+# Misc
+HELP.md
