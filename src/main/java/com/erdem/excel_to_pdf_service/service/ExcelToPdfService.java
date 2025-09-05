@@ -35,6 +35,69 @@ public class ExcelToPdfService {
     @Value("${app.output.directory:outputs}")
     private String outputDirectory;
 
+    // Cached BaseFont loaded once; if null, fall back to default Helvetica
+    private com.itextpdf.text.pdf.BaseFont unicodeBaseFont;
+
+    // Explicit no-args constructor to initialize fonts eagerly and avoid "unused" warnings
+    public ExcelToPdfService() {
+        initFonts();
+    }
+
+    /**
+     * Initializes the cached Unicode BaseFont once at application startup.
+     */
+    private void initFonts() {
+        try (java.io.InputStream is = this.getClass().getResourceAsStream("/fonts/DejaVuSans.ttf")) {
+            if (is != null) {
+                byte[] fontBytes = is.readAllBytes();
+                unicodeBaseFont = com.itextpdf.text.pdf.BaseFont.createFont(
+                        "DejaVuSans.ttf",
+                        com.itextpdf.text.pdf.BaseFont.IDENTITY_H,
+                        com.itextpdf.text.pdf.BaseFont.EMBEDDED,
+                        true,
+                        fontBytes,
+                        null
+                );
+                LOGGER.info("Loaded Unicode font from classpath: DejaVuSans.ttf");
+                return;
+            }
+        } catch (java.io.IOException | com.itextpdf.text.DocumentException e) {
+            LOGGER.debug("Classpath Unicode font not available: {}", e.getMessage());
+        }
+        
+        // Fast fallback: try a few known system font locations (no directory scanning)
+        String[] candidatePaths = new String[] {
+                "/Library/Fonts/Arial Unicode.ttf",
+                "/Library/Fonts/Arial Unicode MS.ttf",
+                "/System/Library/Fonts/Supplemental/NotoSans-Regular.ttf",
+                "/System/Library/Fonts/Supplemental/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf"
+        };
+        for (String path : candidatePaths) {
+            try {
+                java.nio.file.Path p = java.nio.file.Paths.get(path);
+                if (java.nio.file.Files.exists(p)) {
+                    unicodeBaseFont = com.itextpdf.text.pdf.BaseFont.createFont(
+                            path,
+                            com.itextpdf.text.pdf.BaseFont.IDENTITY_H,
+                            com.itextpdf.text.pdf.BaseFont.EMBEDDED,
+                            true,
+                            null,
+                            null
+                    );
+                    LOGGER.info("Loaded Unicode font from system path: {}", path);
+                    return;
+                }
+            } catch (com.itextpdf.text.DocumentException | java.io.IOException e) {
+                LOGGER.debug("Failed to load system Unicode font {}: {}", path, e.getMessage());
+            }
+        }
+        
+        // If none found, keep null to use Helvetica. Turkish glyphs may not render until a Unicode TTF is provided.
+        LOGGER.warn("No Unicode TTF found. Add DejaVuSans.ttf to src/main/resources/fonts/ for full Turkish support.");
+    }
+
     public byte[] convertToPdf(InputStream excelInputStream) throws Exception {
         try (Workbook workbook = new XSSFWorkbook(excelInputStream);
              ByteArrayOutputStream pdfOutputStream = new ByteArrayOutputStream()) {
@@ -162,10 +225,11 @@ public class ExcelToPdfService {
      * Create a styled Paragraph from an Excel cell with proper formatting
      */
     private Paragraph createStyledParagraph(Cell cell, String value, Workbook workbook) {
-        com.itextpdf.text.Font font = new com.itextpdf.text.Font();
         int alignment = Element.ALIGN_LEFT;
         com.itextpdf.text.BaseColor textColor = null;
         com.itextpdf.text.BaseColor backgroundColor = null;
+        int resolvedFontStyle = com.itextpdf.text.Font.NORMAL;
+        short resolvedFontSize = 12;
         
         if (cell != null) {
             var cellStyle = cell.getCellStyle();
@@ -206,19 +270,18 @@ public class ExcelToPdfService {
                     var poiFont = workbook.getFontAt(fontIdx);
                     
                     // Set font style
-                    int fontStyle = com.itextpdf.text.Font.NORMAL;
+                    resolvedFontStyle = com.itextpdf.text.Font.NORMAL;
                     if (poiFont.getBold()) {
-                        fontStyle |= com.itextpdf.text.Font.BOLD;
+                        resolvedFontStyle |= com.itextpdf.text.Font.BOLD;
                     }
                     if (poiFont.getItalic()) {
-                        fontStyle |= com.itextpdf.text.Font.ITALIC;
+                        resolvedFontStyle |= com.itextpdf.text.Font.ITALIC;
                     }
-                    font.setStyle(fontStyle);
                     
                     // Set font size
                     short fontSize = poiFont.getFontHeightInPoints();
                     if (fontSize > 0) {
-                        font.setSize(fontSize);
+                        resolvedFontSize = fontSize;
                     }
                     
                     // Handle text color - use the correct POI API
@@ -236,18 +299,17 @@ public class ExcelToPdfService {
             }
         }
         
+        // Lightweight font selection: reuse cached Unicode BaseFont if present; otherwise Helvetica
+        com.itextpdf.text.Font font = (unicodeBaseFont != null)
+                ? new com.itextpdf.text.Font(unicodeBaseFont, resolvedFontSize, resolvedFontStyle, textColor)
+                : new com.itextpdf.text.Font(com.itextpdf.text.Font.FontFamily.HELVETICA, resolvedFontSize, resolvedFontStyle, textColor);
+        
         // Create the paragraph
         Paragraph paragraph = new Paragraph(value, font);
         paragraph.setAlignment(alignment);
         
-        // Apply text color
-        if (textColor != null) {
-            font.setColor(textColor);
-        }
-        
         // Apply background color using a table cell approach
         if (backgroundColor != null) {
-            // Create a single-cell table to apply background color
             com.itextpdf.text.pdf.PdfPTable colorTable = new com.itextpdf.text.pdf.PdfPTable(1);
             colorTable.setWidthPercentage(100);
             colorTable.getDefaultCell().setBackgroundColor(backgroundColor);
