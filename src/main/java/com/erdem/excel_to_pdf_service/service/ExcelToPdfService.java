@@ -19,10 +19,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import com.itextpdf.text.Document;
-import com.itextpdf.text.Element;
-import com.itextpdf.text.Paragraph;
-import com.itextpdf.text.pdf.PdfWriter;
+import com.lowagie.text.Document;
+import com.lowagie.text.Element;
+import com.lowagie.text.Paragraph;
+import com.lowagie.text.pdf.PdfWriter;
 
 @Service
 public class ExcelToPdfService {
@@ -36,7 +36,7 @@ public class ExcelToPdfService {
     private String outputDirectory;
 
     // Cached BaseFont loaded once; if null, fall back to default Helvetica
-    private com.itextpdf.text.pdf.BaseFont unicodeBaseFont;
+    private com.lowagie.text.pdf.BaseFont unicodeBaseFont;
 
     // Explicit no-args constructor to initialize fonts eagerly and avoid "unused" warnings
     public ExcelToPdfService() {
@@ -50,10 +50,10 @@ public class ExcelToPdfService {
         try (java.io.InputStream is = this.getClass().getResourceAsStream("/fonts/DejaVuSans.ttf")) {
             if (is != null) {
                 byte[] fontBytes = is.readAllBytes();
-                unicodeBaseFont = com.itextpdf.text.pdf.BaseFont.createFont(
+                unicodeBaseFont = com.lowagie.text.pdf.BaseFont.createFont(
                         "DejaVuSans.ttf",
-                        com.itextpdf.text.pdf.BaseFont.IDENTITY_H,
-                        com.itextpdf.text.pdf.BaseFont.EMBEDDED,
+                        com.lowagie.text.pdf.BaseFont.IDENTITY_H,
+                        com.lowagie.text.pdf.BaseFont.EMBEDDED,
                         true,
                         fontBytes,
                         null
@@ -61,7 +61,7 @@ public class ExcelToPdfService {
                 LOGGER.info("Loaded Unicode font from classpath: DejaVuSans.ttf");
                 return;
             }
-        } catch (java.io.IOException | com.itextpdf.text.DocumentException e) {
+        } catch (java.io.IOException | com.lowagie.text.DocumentException e) {
             LOGGER.debug("Classpath Unicode font not available: {}", e.getMessage());
         }
         
@@ -78,10 +78,10 @@ public class ExcelToPdfService {
             try {
                 java.nio.file.Path p = java.nio.file.Paths.get(path);
                 if (java.nio.file.Files.exists(p)) {
-                    unicodeBaseFont = com.itextpdf.text.pdf.BaseFont.createFont(
+                    unicodeBaseFont = com.lowagie.text.pdf.BaseFont.createFont(
                             path,
-                            com.itextpdf.text.pdf.BaseFont.IDENTITY_H,
-                            com.itextpdf.text.pdf.BaseFont.EMBEDDED,
+                            com.lowagie.text.pdf.BaseFont.IDENTITY_H,
+                            com.lowagie.text.pdf.BaseFont.EMBEDDED,
                             true,
                             null,
                             null
@@ -89,7 +89,7 @@ public class ExcelToPdfService {
                     LOGGER.info("Loaded Unicode font from system path: {}", path);
                     return;
                 }
-            } catch (com.itextpdf.text.DocumentException | java.io.IOException e) {
+            } catch (com.lowagie.text.DocumentException | java.io.IOException e) {
                 LOGGER.debug("Failed to load system Unicode font {}: {}", path, e.getMessage());
             }
         }
@@ -108,44 +108,43 @@ public class ExcelToPdfService {
             int maxColumns = findMaxColumns(sheet);
             LOGGER.info("Detected {} columns in Excel sheet", maxColumns);
             
-            Document document = new Document();
-            PdfWriter.getInstance(document, pdfOutputStream);
-            document.open();
+            try (Document document = new Document()) {
+                PdfWriter.getInstance(document, pdfOutputStream);
+                document.open();
 
-            // Process each column
-            for (int colIndex = 0; colIndex < maxColumns; colIndex++) {
-                LOGGER.info("Processing column {}", colIndex);
-                
-                // Process all rows for this column
-                boolean hasContent = false;
-                for (Row row : sheet) {
-                    if (row != null) {
-                        Cell cell = row.getCell(colIndex);
-                        String cellValue = getCellValue(cell);
-                        
-                        if (!cellValue.isEmpty()) {
-                            hasContent = true;
-                            Paragraph cellParagraph = createStyledParagraph(cell, cellValue, workbook);
-                            cellParagraph.setSpacingAfter(5f);
-                            document.add(cellParagraph);
+                // Process each column
+                for (int colIndex = 0; colIndex < maxColumns; colIndex++) {
+                    LOGGER.info("Processing column {}", colIndex);
+                    
+                    // Process all rows for this column
+                    boolean hasContent = false;
+                    for (Row row : sheet) {
+                        if (row != null) {
+                            Cell cell = row.getCell(colIndex);
+                            String cellValue = getCellValue(cell);
+                            
+                            if (!cellValue.isEmpty()) {
+                                hasContent = true;
+                                Paragraph cellParagraph = createStyledParagraph(cell, cellValue, workbook);
+                                cellParagraph.setSpacingAfter(5f);
+                                document.add(cellParagraph);
+                            }
                         }
                     }
-                }
-                
-                // Add spacing between columns
-                if (hasContent) {
-                    Paragraph spacing = new Paragraph(" ");
-                    spacing.setSpacingAfter(20f);
-                    document.add(spacing);
-                }
-                
-                // Add page break after each column (except the last one)
-                if (colIndex < maxColumns - 1) {
-                    document.newPage();
+                    
+                    // Add spacing between columns
+                    if (hasContent) {
+                        Paragraph spacing = new Paragraph(" ");
+                        spacing.setSpacingAfter(20f);
+                        document.add(spacing);
+                    }
+                    
+                    // Add page break after each column (except the last one)
+                    if (colIndex < maxColumns - 1) {
+                        document.newPage();
+                    }
                 }
             }
-
-            document.close();
 
             byte[] pdfBytes = pdfOutputStream.toByteArray();
 
@@ -226,9 +225,9 @@ public class ExcelToPdfService {
      */
     private Paragraph createStyledParagraph(Cell cell, String value, Workbook workbook) {
         int alignment = Element.ALIGN_LEFT;
-        com.itextpdf.text.BaseColor textColor = null;
-        com.itextpdf.text.BaseColor backgroundColor = null;
-        int resolvedFontStyle = com.itextpdf.text.Font.NORMAL;
+        com.lowagie.text.pdf.RGBColor textColor = null;
+        com.lowagie.text.pdf.RGBColor backgroundColor = null;
+        int resolvedFontStyle = com.lowagie.text.Font.NORMAL;
         short resolvedFontSize = 12;
         
         if (cell != null) {
@@ -258,7 +257,7 @@ public class ExcelToPdfService {
                     var fillColor = cellStyle.getFillForegroundColorColor();
                     if (fillColor instanceof org.apache.poi.xssf.usermodel.XSSFColor xssfColor && xssfColor.getRGB() != null) {
                         byte[] rgb = xssfColor.getRGB();
-                        backgroundColor = new com.itextpdf.text.BaseColor(rgb[0] & 0xFF, rgb[1] & 0xFF, rgb[2] & 0xFF);
+                        backgroundColor = new com.lowagie.text.pdf.RGBColor(rgb[0] & 0xFF, rgb[1] & 0xFF, rgb[2] & 0xFF);
                     }
                 } catch (Exception e) {
                     LOGGER.debug("Could not extract background color: {}", e.getMessage());
@@ -270,12 +269,12 @@ public class ExcelToPdfService {
                     var poiFont = workbook.getFontAt(fontIdx);
                     
                     // Set font style
-                    resolvedFontStyle = com.itextpdf.text.Font.NORMAL;
+                    resolvedFontStyle = com.lowagie.text.Font.NORMAL;
                     if (poiFont.getBold()) {
-                        resolvedFontStyle |= com.itextpdf.text.Font.BOLD;
+                        resolvedFontStyle |= com.lowagie.text.Font.BOLD;
                     }
                     if (poiFont.getItalic()) {
-                        resolvedFontStyle |= com.itextpdf.text.Font.ITALIC;
+                        resolvedFontStyle |= com.lowagie.text.Font.ITALIC;
                     }
                     
                     // Set font size
@@ -289,7 +288,7 @@ public class ExcelToPdfService {
                         org.apache.poi.xssf.usermodel.XSSFColor fontColor = xssfFont.getXSSFColor();
                         if (fontColor != null && fontColor.getRGB() != null) {
                             byte[] rgb = fontColor.getRGB();
-                            textColor = new com.itextpdf.text.BaseColor(rgb[0] & 0xFF, rgb[1] & 0xFF, rgb[2] & 0xFF);
+                            textColor = new com.lowagie.text.pdf.RGBColor(rgb[0] & 0xFF, rgb[1] & 0xFF, rgb[2] & 0xFF);
                         }
                     }
                     
@@ -300,26 +299,22 @@ public class ExcelToPdfService {
         }
         
         // Lightweight font selection: reuse cached Unicode BaseFont if present; otherwise Helvetica
-        com.itextpdf.text.Font font = (unicodeBaseFont != null)
-                ? new com.itextpdf.text.Font(unicodeBaseFont, resolvedFontSize, resolvedFontStyle, textColor)
-                : new com.itextpdf.text.Font(com.itextpdf.text.Font.FontFamily.HELVETICA, resolvedFontSize, resolvedFontStyle, textColor);
+        com.lowagie.text.Font font = (unicodeBaseFont != null)
+                ? new com.lowagie.text.Font(unicodeBaseFont, resolvedFontSize, resolvedFontStyle, textColor)
+                : new com.lowagie.text.Font(com.lowagie.text.Font.HELVETICA, resolvedFontSize, resolvedFontStyle, textColor);
         
         // Create the paragraph
         Paragraph paragraph = new Paragraph(value, font);
         paragraph.setAlignment(alignment);
         
-        // Apply background color using a table cell approach
+        // Apply background color using a chunk approach
         if (backgroundColor != null) {
-            com.itextpdf.text.pdf.PdfPTable colorTable = new com.itextpdf.text.pdf.PdfPTable(1);
-            colorTable.setWidthPercentage(100);
-            colorTable.getDefaultCell().setBackgroundColor(backgroundColor);
-            colorTable.getDefaultCell().setBorder(com.itextpdf.text.Rectangle.NO_BORDER);
-            colorTable.getDefaultCell().setPadding(4f);
-            colorTable.getDefaultCell().setHorizontalAlignment(alignment);
-            colorTable.addCell(paragraph);
-            return new Paragraph() {{
-                add(colorTable);
-            }};
+            com.lowagie.text.Chunk chunk = new com.lowagie.text.Chunk(value, font);
+            chunk.setBackground(backgroundColor);
+            Paragraph p = new Paragraph();
+            p.setAlignment(alignment);
+            p.add(chunk);
+            return p;
         }
         
         return paragraph;
