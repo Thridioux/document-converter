@@ -36,5 +36,11 @@ outputs/
 # Logs
 *.log
 
+# Test files
+jmeter-test/
+
+# Original Excel files
+files/OriginalXLSX/
+
 # Misc
 HELP.md
