@@ -1,4 +1,4 @@
-package com.erdem.excel_to_pdf_service.controller;
+package com.erdem.document_converter_service.controller;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -50,10 +50,7 @@ import jakarta.annotation.PreDestroy;
 public class ConvertController {
     private static final Logger LOGGER = LoggerFactory.getLogger(ConvertController.class);
 
-    // Thread pool for parallel processing
     private ExecutorService executorService;
-
-    // Playwright single browser + semaphore to limit concurrency (lighter than multiple browsers)
     private Playwright playwright;
     private Browser browser;
     private Semaphore browserSemaphore;
@@ -62,11 +59,20 @@ public class ConvertController {
     @Value("${playwright.browser.pool.size:4}")
     private int configuredPoolSize;
 
+    // Use Spring Boot's standard 'debug' flag to control cleanup behavior
+    // When debug=false (production), output files will be deleted after serving
+    // When debug=true (dev), output files will be retained
+    @Value("${debug:false}")
+    private boolean debugEnabled;
+
+    // Optional configurable output directory; if set, all temp files will be created here
+    @Value("${app.output.directory:}")
+    private String configuredOutputDirectory;
+
     @Autowired(required = false)
     private DocumentConverter documentConverter;
 
     private static final DateTimeFormatter TIMESTAMP_FMT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
-
 
     @PostConstruct
     public void init() {
@@ -126,9 +132,9 @@ public class ConvertController {
             LOGGER.info("Playwright browser launched (concurrency limit={})", poolSize);
         } catch (Exception e) {
             LOGGER.error("Failed to initialize Playwright: {}", e.getMessage(), e);
-            // fallback: conversions will return 503 if browser == null
         }
     }
+
     @PreDestroy
     public void shutdownThreadPool() {
         if (executorService != null && !executorService.isShutdown()) {
@@ -214,7 +220,6 @@ public class ConvertController {
             throw new RuntimeException("Output PDF not created");
         }
 
-        // Stream the file to client and schedule async cleanup
         InputStream is = Files.newInputStream(outputPath);
         InputStreamResource resource = new InputStreamResource(is);
         long contentLength = Files.size(outputPath);
@@ -271,7 +276,6 @@ public class ConvertController {
         file.transferTo(inputPath);
         Path outputPath = inputPath.getParent().resolve(baseName + ".pdf");
 
-        // Read HTML into memory and avoid writing optimized file to disk if small
         String htmlContent = Files.readString(inputPath, StandardCharsets.UTF_8);
         htmlContent = optimizeHtmlForPdf(htmlContent);
 
@@ -283,23 +287,17 @@ public class ConvertController {
 
         try (com.microsoft.playwright.BrowserContext context = browser.newContext()) {
             Page page = context.newPage();
-
-            page.setDefaultTimeout(15000); // fail fast
+            page.setDefaultTimeout(15000);
             page.setDefaultNavigationTimeout(15000);
-
-            // Use setContent to avoid disk I/O
             page.setContent(htmlContent, new Page.SetContentOptions().setWaitUntil(com.microsoft.playwright.options.WaitUntilState.NETWORKIDLE));
-
             page.pdf(new Page.PdfOptions()
                     .setPath(outputPath)
                     .setFormat("A4")
-                    .setMargin(new com.microsoft.playwright.options.Margin()
-                            .setTop("5mm").setRight("5mm").setBottom("5mm").setLeft("5mm"))
+                    .setMargin(new com.microsoft.playwright.options.Margin().setTop("5mm").setRight("5mm").setBottom("5mm").setLeft("5mm"))
                     .setPrintBackground(true)
                     .setPreferCSSPageSize(true)
                     .setDisplayHeaderFooter(false)
                     .setScale(0.9));
-
             LOGGER.info("HTML to PDF completed. Output: {}", outputPath);
         } catch (Exception e) {
             LOGGER.error("Playwright conversion failed: {}", e.getMessage(), e);
@@ -328,28 +326,35 @@ public class ConvertController {
     }
 
     private Path determineTempDir() throws IOException {
-        String debugMode = System.getenv("DEBUG_MODE");
+        if (configuredOutputDirectory != null && !configuredOutputDirectory.isBlank()) {
+            Path configuredDir = Paths.get(configuredOutputDirectory);
+            Files.createDirectories(configuredDir);
+            return configuredDir;
+        }
+
         Path localOutputsDir = Paths.get("outputs");
         if (Files.exists(localOutputsDir) && Files.isDirectory(localOutputsDir)) {
             return localOutputsDir;
-        } else if ("true".equals(debugMode)) {
+        }
+
+        if (debugEnabled) {
             Path debugDir = Paths.get("/tmp/outputs");
             Files.createDirectories(debugDir);
             return debugDir;
-        } else {
-            return Files.createTempDirectory("convert-");
         }
+
+        return Files.createTempDirectory("convert-");
     }
 
     private void scheduleCleanupAsync(Path inputPath, Path outputPath) {
         executorService.submit(() -> {
             try {
-                // small sleep to ensure stream consumers have started
                 TimeUnit.SECONDS.sleep(2);
                 Files.deleteIfExists(inputPath);
-                // keep PDF for a short time then delete
-                TimeUnit.SECONDS.sleep(30);
-                Files.deleteIfExists(outputPath);
+                if (!debugEnabled) {
+                    TimeUnit.SECONDS.sleep(30);
+                    Files.deleteIfExists(outputPath);
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (IOException | RuntimeException e) {
@@ -363,7 +368,6 @@ public class ConvertController {
             String pdfOptimizedCss = """
                 <style type=\"text/css\" media=\"print\">@page{margin:0.5cm;size:A4;}body{margin:0;padding:10px;font-family:Arial, sans-serif;-webkit-print-color-adjust:exact;}</style>
                 """;
-
             if (htmlContent.toLowerCase().contains("<head>")) {
                 htmlContent = htmlContent.replaceFirst("(?i)(<head[^>]*>)", "$1" + pdfOptimizedCss);
             } else if (htmlContent.toLowerCase().contains("<html>")) {
@@ -385,3 +389,5 @@ public class ConvertController {
                 .body("{\"error\": \"Unsupported media type. Send multipart/form-data with 'file'.\"}");
     }
 }
+
+

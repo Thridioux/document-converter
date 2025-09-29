@@ -1,27 +1,36 @@
 services:
-  excel-to-pdf-service:
-    image: excel-to-pdf-service:0.0.6
-    container_name: excel-to-pdf-service-test
+  document-converter-service:
+    image: document-converter-service:0.0.8
+    container_name: document-converter-service-test
     ports:
       - "8080:8080"
     environment:
       - DEBUG_MODE=true
     networks:
       - test-network
-
   jmeter:
     image: justb4/jmeter:5.5
     container_name: jmeter
-    user: root  
+    platform: linux/amd64
+    user: root
     volumes:
       - ./jmeter-test:/jmeter
+      - ./jmeter-test/dashboard:/jmeter/dashboard
     depends_on:
-      - excel-to-pdf-service
-    command: >
-      -n -t /jmeter/optimized-mixed-load.jmx -l /jmeter/results/optimized-mixed-load-results.jtl -e -o /jmeter/dashboard
+      - document-converter-service
+    entrypoint: >
+      /bin/sh -c "
+      echo '🕓 Waiting for document-converter-service...';
+      until curl -s http://document-converter-service:8080/actuator/health | grep 'UP' > /dev/null; do
+        sleep 3;
+      done;
+      echo '✅ Service is up! Starting JMeter...';
+      jmeter -n -t /jmeter/simple-mixed-load.jmx \
+             -l /jmeter/results/simple-mixed-load-v0.0.8-results.jtl \
+             -e -o /jmeter/dashboard"
     networks:
       - test-network
-      
+
 networks:
   test-network:
     name: test-network

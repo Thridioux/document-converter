@@ -51,11 +51,10 @@ EOF
 
 # Create a non-root user
 RUN useradd -m -r -g users appuser && \
-    mkdir -p /app/outputs && \
     chown -R appuser:users /app
 
 WORKDIR /app
-COPY --from=build /app/target/excel-to-pdf-service-*.jar app.jar
+COPY --from=build /app/target/document-converter-service-*.jar app.jar
 
 # Environment variables
 ENV DEBUG_MODE=false \
