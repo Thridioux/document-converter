@@ -44,3 +44,7 @@ files/OriginalXLSX/
 
 # Misc
 HELP.md
+
+
+#ignore notes
+/notes/
