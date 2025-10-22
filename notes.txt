@@ -1,17 +1,18 @@
 docker exec -it document-converter-service /bin/bash
 
 build the image: 
-docker build -t document-converter-service:0.0.8 .
+docker build -t document-converter-service:0.0.1 .
 
 
 run the container with volume mount:
 mkdir -p outputs
+chmod 0777 outputs
 
 docker run -d --name document-converter-service \
   -p 8080:8080 \
   -v "$(pwd)/outputs:/tmp/outputs" \
   -e DEBUG=true \
-  document-converter-service:0.0.8
+  document-converter-service:0.0.1
 
 
 run test via jmeter container:

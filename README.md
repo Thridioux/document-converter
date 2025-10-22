@@ -8,10 +8,9 @@ The generated PDF can then be downloaded directly.
 
 ## ✨ Features
 
-✅ **Convert Excel to PDF**: Upload XLSX files and receive PDF conversions with optimized formatting.  
+✅ **Convert Excel to PDF**: Upload XLSX files and receive PDF conversions with customizable formatting options (landscape orientation, fit-to-page scaling).  
 ✅ **Convert HTML to PDF**: Upload HTML files and generate high-quality PDF documents.  
 ✅ **Download PDF Files**: Download the generated PDF by making conversion requests.  
-✅ **Cross-Origin Resource Sharing (CORS)**: The API supports cross-origin requests.  
 ✅ **Concurrent Processing**: Handles multiple conversion requests efficiently with thread pool management.  
 
 ---
@@ -103,7 +102,7 @@ Before running this project, ensure you have the following installed:
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
-   cd file-converter-service
+   cd Link.Cloud.DocumentConverter
    ```
 
 2. **Build and run with Docker**
@@ -115,7 +114,7 @@ Before running this project, ensure you have the following installed:
    docker run -p 8080:8080 document-converter-service:latest
    ```
 
-3. **Running in Debug Mode with Volume Mounting**
+3. **Running in Debug Mode with Volume Mount**
    ```bash
    # Create local outputs directory first
    mkdir -p outputs
@@ -196,16 +195,17 @@ Create or modify `src/main/resources/application.properties`:
 spring.application.name=document-converter-service
 server.port=8080
 
+# Debug mode - when false (production), output files will be auto-deleted after serving
+# When true (development), output files will be retained
+debug=true
+
 # File upload limits
 spring.servlet.multipart.max-file-size=10MB
 spring.servlet.multipart.max-request-size=10MB
 
-# Output directory (create this directory)
+# Output directory (use /tmp for container-friendliness)
 app.output.directory=/tmp/outputs
 
-# Performance tuning
-server.tomcat.threads.max=50
-server.tomcat.threads.min-spare=10
 ```
 
 **📁 Create Output Directory:**
@@ -252,23 +252,59 @@ The application will start on `http://localhost:8080`
 
 ### **Convert Excel to PDF**
 ```bash
-POST /api/convert/excel-to-pdf
+POST /api/convert/ExcelToPdf
 Content-Type: multipart/form-data
 
+# Basic conversion
 curl -X POST \
-  http://localhost:8080/api/convert/excel-to-pdf \
+  http://localhost:8080/api/convert/ExcelToPdf \
   -F "file=@path/to/your/file.xlsx"
+
+# With landscape orientation
+curl -X POST \
+  http://localhost:8080/api/convert/ExcelToPdf \
+  -F "file=@path/to/your/file.xlsx" \
+  -F "landscape=true"
+
+# With fit to page option
+curl -X POST \
+  http://localhost:8080/api/convert/ExcelToPdf \
+  -F "file=@path/to/your/file.xlsx" \
+  -F "fitToPage=true"
+
+# With both landscape and fit to page
+curl -X POST \
+  http://localhost:8080/api/convert/ExcelToPdf \
+  -F "file=@path/to/your/file.xlsx" \
+  -F "landscape=true" \
+  -F "fitToPage=true"
 ```
+
+**Parameters:**
+- `file` (required): Excel file (`.xlsx` or `.xls`)
+- `landscape` (optional): Set to `true` for landscape orientation, `false` for portrait (default: `false`)
+- `fitToPage` (optional): Set to `true` to fit content to page, `false` for original scaling (default: `false`)
+
+**Response:** PDF file download with filename `converted.pdf`  
+**Requirements:** LibreOffice must be installed and configured
 
 ### **Convert HTML to PDF**
 ```bash
-POST /api/convert/html-to-pdf
+POST /api/convert/HtmlToPdf
 Content-Type: multipart/form-data
 
 curl -X POST \
-  http://localhost:8080/api/convert/html-to-pdf \
+  http://localhost:8080/api/convert/HtmlToPdf \
   -F "file=@path/to/your/file.html"
 ```
+
+**Supported file formats:** `.html`, `.htm`  
+**Response:** PDF file download with filename `converted-from-html.pdf`  
+**Features:**
+- A4 format with 5mm margins
+- Background colors and images preserved
+- CSS print styles automatically optimized
+- Network idle wait for complete resource loading
 
 ---
 
@@ -277,10 +313,15 @@ curl -X POST \
 | Property | Default | Description |
 |----------|---------|-------------|
 | `server.port` | `8080` | Application port |
+| `debug` | `true` | Keep output files for debugging |
 | `app.output.directory` | `/tmp/outputs` | Directory for generated files |
 | `spring.servlet.multipart.max-file-size` | `10MB` | Maximum file upload size |
 | `server.tomcat.threads.max` | `50` | Maximum thread pool size |
-| `debug` | `true` | Keep output files for debugging |
+| `playwright.browser.pool.size` | `4` | Browser instance pool size |
+| `playwright.browser.timeout` | `30000` | Browser timeout in milliseconds |
+| `jodconverter.local.enabled` | `true` | Enable LibreOffice conversion |
+| `jodconverter.local.max-tasks-per-process` | `10` | Max tasks per LibreOffice process |
+| `jodconverter.local.office-home` | `/usr/lib/libreoffice` | LibreOffice installation path |
 
 ---
 
@@ -326,5 +367,3 @@ curl -X POST \
 - Output files are automatically cleaned up in production mode (`debug=false`)
 - Playwright browsers are managed with proper lifecycle handling
 - JODConverter uses LibreOffice in headless mode for Excel conversions
-
-

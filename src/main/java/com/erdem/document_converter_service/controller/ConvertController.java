@@ -20,6 +20,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.jodconverter.core.DocumentConverter;
 import org.jodconverter.core.office.OfficeException;
+import org.jodconverter.local.LocalConverter;
+import org.jodconverter.local.filter.DefaultFilterChain;
+import org.jodconverter.local.filter.Filter;
+import org.jodconverter.local.filter.FilterChain;
+import org.jodconverter.local.office.LocalOfficeManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -41,6 +46,15 @@ import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
+import com.sun.star.beans.XPropertySet;
+import com.sun.star.container.XIndexAccess;
+import com.sun.star.container.XNameAccess;
+import com.sun.star.lang.XComponent;
+import com.sun.star.sheet.XSpreadsheet;
+import com.sun.star.sheet.XSpreadsheetDocument;
+import com.sun.star.style.XStyle;
+import com.sun.star.style.XStyleFamiliesSupplier;
+import com.sun.star.uno.UnoRuntime;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -71,6 +85,9 @@ public class ConvertController {
 
     @Autowired(required = false)
     private DocumentConverter documentConverter;
+    
+    @Autowired(required = false)
+    private LocalOfficeManager officeManager;
 
     private static final DateTimeFormatter TIMESTAMP_FMT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
@@ -166,11 +183,14 @@ public class ConvertController {
         }
     }
 
-    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public CompletableFuture<ResponseEntity<Resource>> convertExcelToPdf(@RequestParam("file") MultipartFile file) {
+    @PostMapping(value = "/ExcelToPdf", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public CompletableFuture<ResponseEntity<Resource>> convertExcelToPdf(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "landscape", defaultValue = "false") boolean landscape,
+            @RequestParam(value = "fitToPage", defaultValue = "false") boolean fitToPage) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                return convertExcelToPdfSync(file);
+                return convertExcelToPdfSync(file, landscape, fitToPage);
             } catch (Exception e) {
                 LOGGER.error("Error in async Excel to PDF: {}", e.getMessage(), e);
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
@@ -178,7 +198,7 @@ public class ConvertController {
         }, executorService);
     }
 
-    private ResponseEntity<Resource> convertExcelToPdfSync(MultipartFile file) throws Exception {
+    private ResponseEntity<Resource> convertExcelToPdfSync(MultipartFile file, boolean landscape, boolean fitToPage) throws Exception {
         if (documentConverter == null) {
             LOGGER.error("Excel conversion unavailable: LibreOffice not configured");
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
@@ -197,7 +217,8 @@ public class ConvertController {
             return ResponseEntity.badRequest().build();
         }
 
-        LOGGER.info("Starting Excel conversion: {} size={} bytes", originalFilename, file.getSize());
+        LOGGER.info("Starting Excel conversion: {} size={} bytes, landscape={}, fitToPage={}", 
+                   originalFilename, file.getSize(), landscape, fitToPage);
 
         Path tempDir = determineTempDir();
         String safeName = originalFilename.replaceAll("[^a-zA-Z0-9._-]", "_");
@@ -209,7 +230,40 @@ public class ConvertController {
         Path outputPath = inputPath.getParent().resolve(baseName + ".pdf");
 
         try {
-            documentConverter.convert(inputPath.toFile()).to(outputPath.toFile()).execute();
+            if (landscape || fitToPage) {
+                // Use LibreOffice UNO API to set page properties before conversion
+                Filter pagePropertiesFilter = createPagePropertiesFilter(landscape, fitToPage);
+                Filter pdfExportFilter = createPdfExportFilter(landscape);
+                
+                // Create filter chain
+                FilterChain filterChain = new DefaultFilterChain(pagePropertiesFilter, pdfExportFilter);
+                
+                // Create PDF format
+                org.jodconverter.core.document.DocumentFormat pdfFormat = 
+                    org.jodconverter.core.document.DocumentFormat.builder()
+                        .name("PDF")
+                        .extension("pdf")
+                        .mediaType("application/pdf")
+                        .storeProperty(org.jodconverter.core.document.DocumentFamily.SPREADSHEET, 
+                                      "FilterName", "calc_pdf_Export")
+                        .build();
+                
+                // Use LocalConverter with filter support
+                LocalConverter.builder()
+                    .officeManager(officeManager)
+                    .filterChain(filterChain)
+                    .build()
+                    .convert(inputPath.toFile())
+                    .as(pdfFormat)
+                    .to(outputPath.toFile())
+                    .execute();
+                    
+                LOGGER.info("Excel converted with UNO API settings: landscape={}, fitToPage={}", landscape, fitToPage);
+            } else {
+                // Standard conversion
+                documentConverter.convert(inputPath.toFile()).to(outputPath.toFile()).execute();
+                LOGGER.info("Excel converted with default settings");
+            }
         } catch (OfficeException e) {
             LOGGER.error("JODConverter failed: {}", e.getMessage(), e);
             throw new RuntimeException("Document conversion failed", e);
@@ -234,7 +288,7 @@ public class ConvertController {
         return response;
     }
 
-    @PostMapping(value = "/html-to-pdf", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PostMapping(value = "/HtmlToPdf", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public CompletableFuture<ResponseEntity<Resource>> convertHtmlToPdf(@RequestParam("file") MultipartFile file) {
         return CompletableFuture.supplyAsync(() -> {
             try {
@@ -363,6 +417,155 @@ public class ConvertController {
         });
     }
 
+    /**
+     * Creates a JODConverter Filter that uses LibreOffice UNO API to set page properties.
+     * This allows us to programmatically set landscape orientation and fit-to-page scaling.
+     */
+    private Filter createPagePropertiesFilter(boolean landscape, boolean fitToPage) {
+        return (context, document, chain) -> {
+            try {
+                // Get the document as XComponent
+                XComponent xComponent = document;
+                
+                // Query for XSpreadsheetDocument interface
+                XSpreadsheetDocument xSpreadsheetDoc = UnoRuntime.queryInterface(
+                    XSpreadsheetDocument.class, xComponent);
+                
+                if (xSpreadsheetDoc != null) {
+                    // Get the style families
+                    XStyleFamiliesSupplier xStyleFamiliesSupplier = UnoRuntime.queryInterface(
+                        XStyleFamiliesSupplier.class, xSpreadsheetDoc);
+                    
+                    XNameAccess xStyleFamilies = xStyleFamiliesSupplier.getStyleFamilies();
+                    
+                    // Get PageStyles family
+                    Object pageStylesObj = xStyleFamilies.getByName("PageStyles");
+                    XNameAccess xPageStyles = UnoRuntime.queryInterface(XNameAccess.class, pageStylesObj);
+                    
+                    // Get all sheets and apply settings to each
+                    XIndexAccess xSheets = UnoRuntime.queryInterface(
+                        XIndexAccess.class, xSpreadsheetDoc.getSheets());
+                    
+                    int sheetCount = xSheets.getCount();
+                    for (int i = 0; i < sheetCount; i++) {
+                        Object sheetObj = xSheets.getByIndex(i);
+                        XSpreadsheet xSheet = UnoRuntime.queryInterface(XSpreadsheet.class, sheetObj);
+                        
+                        // Get the page style property set for this sheet
+                        XPropertySet xSheetProps = UnoRuntime.queryInterface(XPropertySet.class, xSheet);
+                        String pageStyleName = (String) xSheetProps.getPropertyValue("PageStyle");
+                        
+                        // Get the actual page style
+                        Object pageStyleObj = xPageStyles.getByName(pageStyleName);
+                        XStyle xPageStyle = UnoRuntime.queryInterface(XStyle.class, pageStyleObj);
+                        XPropertySet xPageProps = UnoRuntime.queryInterface(XPropertySet.class, xPageStyle);
+                        
+                        // Set landscape orientation
+                        if (landscape) {
+                            // First get current dimensions
+                            int currentWidth = (Integer) xPageProps.getPropertyValue("Width");
+                            int currentHeight = (Integer) xPageProps.getPropertyValue("Height");
+                            
+                            LOGGER.info("Sheet {}: Original dimensions Width={}, Height={}", i, currentWidth, currentHeight);
+                            
+                            // Set IsLandscape property
+                            xPageProps.setPropertyValue("IsLandscape", Boolean.TRUE);
+                            
+                            // CRITICAL: For landscape to work in PDF export, we must swap Width and Height
+                            // LibreOffice doesn't automatically swap dimensions when IsLandscape=true
+                            if (currentWidth < currentHeight) {
+                                // Currently portrait, swap to landscape
+                                xPageProps.setPropertyValue("Width", currentHeight);
+                                xPageProps.setPropertyValue("Height", currentWidth);
+                                LOGGER.info("Sheet {}: Swapped dimensions to Width={}, Height={}", i, currentHeight, currentWidth);
+                            } else {
+                                LOGGER.info("Sheet {}: Already landscape (Width >= Height)", i);
+                            }
+                            
+                            // Verify final state
+                            Boolean isLandscapeValue = (Boolean) xPageProps.getPropertyValue("IsLandscape");
+                            int finalWidth = (Integer) xPageProps.getPropertyValue("Width");
+                            int finalHeight = (Integer) xPageProps.getPropertyValue("Height");
+                            LOGGER.info("Sheet {}: Final state - IsLandscape={}, Width={}, Height={}", 
+                                       i, isLandscapeValue, finalWidth, finalHeight);
+                        }
+                        
+                        // Set fit-to-page scaling
+                        if (fitToPage) {
+                            // ScaleToPages = 1 means fit all content to 1 page
+                            xPageProps.setPropertyValue("ScaleToPages", (short) 1);
+                            
+                            // Verify it was set
+                            Short scaleValue = (Short) xPageProps.getPropertyValue("ScaleToPages");
+                            LOGGER.info("Sheet {}: Set ScaleToPages=1, verified={}", i, scaleValue);
+                        }
+                    }
+                    
+                    LOGGER.info("Successfully applied UNO page properties: landscape={}, fitToPage={}", 
+                               landscape, fitToPage);
+                } else {
+                    LOGGER.warn("Document is not a spreadsheet, skipping page property modifications");
+                }
+                
+            } catch (com.sun.star.uno.Exception e) {
+                LOGGER.error("Failed to apply UNO page properties: {}", e.getMessage(), e);
+                // Don't throw - let conversion continue even if properties fail
+            } catch (RuntimeException e) {
+                LOGGER.error("Runtime error applying UNO page properties: {}", e.getMessage(), e);
+                // Don't throw - let conversion continue even if properties fail
+            }
+            
+            // Continue the filter chain
+            chain.doFilter(context, document);
+        };
+    }
+
+    /**
+     * Creates a filter to apply PDF export settings like orientation.
+     * This filter manipulates the FilterData that gets passed to LibreOffice's PDF export.
+     */
+    private Filter createPdfExportFilter(boolean landscape) {
+        return (context, document, chain) -> {
+            LOGGER.info("Applying PDF export filter: landscape={}", landscape);
+            
+            if (landscape) {
+                try {
+                    // Get the XComponent
+                    XComponent xComponent = document;
+                    
+                    // Query for XSpreadsheetDocument
+                    com.sun.star.sheet.XSpreadsheetDocument xSpreadsheetDoc = 
+                        com.sun.star.uno.UnoRuntime.queryInterface(
+                            com.sun.star.sheet.XSpreadsheetDocument.class, xComponent);
+                    
+                    if (xSpreadsheetDoc != null) {
+                        // Access the printer property set for the document
+                        com.sun.star.beans.XPropertySet xDocProps = 
+                            com.sun.star.uno.UnoRuntime.queryInterface(
+                                com.sun.star.beans.XPropertySet.class, xSpreadsheetDoc);
+                        
+                        if (xDocProps != null) {
+                            // Try to set printer/export orientation
+                            try {
+                                // Some LibreOffice versions support this property
+                                xDocProps.setPropertyValue("PrinterOrientation", 
+                                    com.sun.star.view.PaperOrientation.LANDSCAPE);
+                                LOGGER.info("Set PrinterOrientation to LANDSCAPE");
+                            } catch (com.sun.star.uno.Exception e) {
+                                LOGGER.debug("PrinterOrientation not available: {}", e.getMessage());
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    LOGGER.warn("Could not apply PDF export orientation: {}", e.getMessage());
+                }
+            }
+            
+            // Continue the filter chain
+            chain.doFilter(context, document);
+        };
+    }
+
     private String optimizeHtmlForPdf(String htmlContent) {
         try {
             String pdfOptimizedCss = """
@@ -389,5 +592,3 @@ public class ConvertController {
                 .body("{\"error\": \"Unsupported media type. Send multipart/form-data with 'file'.\"}");
     }
 }
-
-
