@@ -58,10 +58,7 @@ COPY --from=build /app/target/document-converter-service-*.jar app.jar
 
 # Environment variables
 ENV DEBUG_MODE=false \
-    JAVA_TOOL_OPTIONS="-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+UseStringDeduplication -Xms1g -Xmx2g -Djava.awt.headless=true -Dfile.encoding=UTF-8"
-
-USER appuser
-
+    JAVA_TOOL_OPTIONS="-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+UseStringDeduplication -Xms256m -Xmx512m -XX:MaxRAMPercentage=60 -Djava.awt.headless=true -Dfile.encoding=UTF-8"
 EXPOSE 8080
 
 ENTRYPOINT ["java", "-jar", "app.jar"]
